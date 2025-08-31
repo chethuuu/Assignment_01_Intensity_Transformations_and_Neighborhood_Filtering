@@ -1,4 +1,4 @@
-content = """# Assignment 01 — Piecewise Intensity Transform (LUT)
+## Assignment 01 — Intensity Transformations and Neighborhood Filtering
 
 ## Introduction
 
