@@ -5,8 +5,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 
 def window_lut(low: float, high: float) -> np.ndarray:
-    """Build a 256-entry LUT that linearly maps [low,high] -> [0,255]."""
-    if high <= low:  # avoid divide-by-zero
+    """256-value LUT mapping [low, high] to [0, 255]."""
+    if high <= low:
         high = low + 1.0
     x = np.arange(256, dtype=np.float32)
     y = (x - low) * (255.0 / (high - low))
@@ -35,7 +35,7 @@ def save_curve(lut: np.ndarray, title: str, path: Path):
 
 def save_histogram(img_gray: np.ndarray, path: Path):
     plt.figure()
-    plt.hist(img_gray.ravel(), bins=256, range=(0,255))
+    plt.hist(img_gray.ravel(), bins=256, range=(0, 255))
     plt.xlabel("Intensity")
     plt.ylabel("Count")
     plt.title("Brain slice histogram")
@@ -46,41 +46,34 @@ def save_histogram(img_gray: np.ndarray, path: Path):
     print(f"Saved: {path}")
 
 def main():
-    ap = argparse.ArgumentParser(description="Q2: WM/GM windowing with transform plots")
-    ap.add_argument("--input", default="assets/brain.png", help="Path to brain image")
+    ap = argparse.ArgumentParser(description="WM/GM windowing with transform plots")
+    ap.add_argument("--input", default="assets/brain.png", help="Path to grayscale brain image")
     ap.add_argument("--outdir", default="outputs", help="Directory for results")
-    # You can tune these numbers for your slice after inspecting the histogram.
-    ap.add_argument("--wm", nargs=2, type=float, metavar=("LOW","HIGH"),
-                    help="Window (low high) to accentuate white matter")
-    ap.add_argument("--gm", nargs=2, type=float, metavar=("LOW","HIGH"),
-                    help="Window (low high) to accentuate gray matter")
+    ap.add_argument("--wm", nargs=2, type=float, metavar=("LOW", "HIGH"),
+                    help="Window for white matter")
+    ap.add_argument("--gm", nargs=2, type=float, metavar=("LOW", "HIGH"),
+                    help="Window for gray matter")
     args = ap.parse_args()
 
-    # Load grayscale
     img = Image.open(args.input).convert("L")
     I = np.array(img, dtype=np.uint8)
 
     outdir = Path(args.outdir)
 
-    # --- Choose windows ---
     wm_low, wm_high = (135.0, 165.0) if not args.wm else tuple(args.wm)
     gm_low, gm_high = (170.0, 200.0) if not args.gm else tuple(args.gm)
 
-    # Build LUTs
     wm_lut = window_lut(wm_low, wm_high)
     gm_lut = window_lut(gm_low, gm_high)
 
-    # Apply and save images
     wm_img = apply_lut(I, wm_lut)
     gm_img = apply_lut(I, gm_lut)
     save_image(wm_img, outdir / "q2_wm_accentuated.png")
     save_image(gm_img, outdir / "q2_gm_accentuated.png")
 
-    # Save transform curves (what the assignment asks for)
     save_curve(wm_lut, f"WM window (low={wm_low}, high={wm_high})", outdir / "q2_wm_curve.png")
     save_curve(gm_lut, f"GM window (low={gm_low}, high={gm_high})", outdir / "q2_gm_curve.png")
 
-    # Optional: histogram to help you refine windows
     save_histogram(I, outdir / "q2_histogram.png")
 
 if __name__ == "__main__":
