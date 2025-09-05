@@ -20,15 +20,13 @@ def build_lut() -> np.ndarray:
     # >150  (identity)
     m3 = x > 150
     y[m3] = x[m3]
-
-    # enforce the vertical jump at exactly 150
     y[150] = 255.0
 
     return np.clip(y, 0, 255).astype(np.uint8)
 
 
 def apply_transform(img_path: Path, out_path: Path):
-    # Load as grayscale; transform is defined on intensity
+    # Load as grayscale & transform is defined on intensity
     img = Image.open(img_path).convert("L")
     arr = np.array(img, dtype=np.uint8)
 
