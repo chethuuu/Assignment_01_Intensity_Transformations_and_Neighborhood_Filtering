@@ -1,101 +1,94 @@
 import argparse
 from pathlib import Path
 import numpy as np
+from PIL import Image
+import cv2
 import matplotlib.pyplot as plt
-from skimage import io, color, img_as_float, img_as_ubyte
 
-def ensure_dir(p):
-    p.parent.mkdir(parents=True, exist_ok=True)
 
-def save_img01(rgb01, path):
-    ensure_dir(path)
-    io.imsave(str(path), img_as_ubyte(np.clip(rgb01, 0, 1)))
+def to_bgr_u8(img_path: Path) -> np.ndarray:
+    """Load RGB with PIL and return BGR uint8 for OpenCV."""
+    rgb = np.array(Image.open(img_path).convert("RGB"))
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def save_rgb(arr_rgb: np.ndarray, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(arr_rgb).save(path)
     print("Saved:", path)
 
-def save_hist(L01, title, path):
+
+def gamma_lut(gamma: float) -> np.ndarray:
+    """256-value LUT: y = (x/255)^gamma * 255"""
+    x = np.arange(256, dtype=np.float32) / 255.0
+    y = np.power(x, gamma) * 255.0
+    return np.clip(y, 0, 255).astype(np.uint8)
+
+
+def plot_hist_L(L: np.ndarray, title: str, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
     plt.figure()
-    plt.hist(L01.ravel(), bins=256, range=(0, 1))
-    plt.xlabel("L* (0–1)")
-    plt.ylabel("Count")
+    plt.hist(L.ravel(), bins=256, range=(0, 255))
     plt.title(title)
-    plt.tight_layout()
-    ensure_dir(path)
-    plt.savefig(path)
+    plt.xlabel("L channel (0–255)")
+    plt.ylabel("Count")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(path, bbox_inches="tight", dpi=150)
     plt.close()
     print("Saved:", path)
 
-def save_gamma_curve(gamma, path):
-    x = np.linspace(0, 1, 512)
-    y = x ** gamma
-    plt.figure()
-    plt.plot(x, y)
-    plt.xlabel("Input (0–1)")
-    plt.ylabel("Output")
-    plt.title(f"Gamma (γ={gamma})")
-    plt.tight_layout()
-    ensure_dir(path)
-    plt.savefig(path)
-    plt.close()
-    print("Saved:", path)
-
-def save_side_by_side(orig01, corr01, gamma, path):
-    plt.figure(figsize=(10, 4.5))
-    plt.subplot(1, 2, 1); plt.imshow(orig01); plt.axis("off"); plt.title("Original")
-    plt.subplot(1, 2, 2); plt.imshow(corr01); plt.axis("off"); plt.title(f"Gamma L* (γ={gamma})")
-    plt.tight_layout()
-    ensure_dir(path)
-    plt.savefig(path, dpi=150)
-    plt.close()
-    print("Saved:", path)
-
-def gamma_L(img_path, gamma):
-    if gamma <= 0:
-        raise ValueError("gamma must be > 0")
-
-    img = io.imread(img_path)
-    if img.ndim == 3 and img.shape[-1] == 4:
-        img = img[..., :3]
-
-    rgb01 = img_as_float(img)
-    lab = color.rgb2lab(rgb01)
-    L = lab[..., 0]             # 0..100
-    a = lab[..., 1]
-    b = lab[..., 2]
-
-    L01 = np.clip(L / 100.0, 0, 1)
-    L01_corr = np.clip(L01 ** gamma, 0, 1)
-
-    lab_corr = np.stack([L01_corr * 100.0, a, b], axis=-1)
-    rgb01_corr = np.clip(color.lab2rgb(lab_corr), 0, 1)
-
-    return rgb01, rgb01_corr, L01, L01_corr
 
 def main():
-    p = argparse.ArgumentParser(description="Gamma-correct L* channel (Lab).")
-    p.add_argument("--input", default="assets/color-space.jpg")
-    p.add_argument("--outdir", default="outputs")
-    p.add_argument("--gamma", type=float, default=0.6)
-    p.add_argument("--no-show", action="store_true")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="assets/color-space.jpg")
+    parser.add_argument("--output", default="outputs/q3/gamma_lab.png")
+    parser.add_argument("--outdir", default="outputs/q3")
+    parser.add_argument("--gamma", type=float, default=0.8,
+                        help="Gamma for L channel")
+    args = parser.parse_args()
 
+    in_path = Path(args.input)
     outdir = Path(args.outdir)
+    out_img = Path(args.output)
 
-    orig01, corr01, L01, L01_corr = gamma_L(args.input, args.gamma)
+    # 1) Load → BGR → L*a*b*
+    bgr = to_bgr_u8(in_path)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    L, a, b = cv2.split(lab)  # L in [0,255] in OpenCV's LAB
 
-    save_img01(corr01, outdir / "/q3/gamma_corrected_lab.png")
-    save_hist(L01, "Original L* hist", outdir / "/q3/_hist_original.png")
-    save_hist(L01_corr, f"Corrected L* hist (γ={args.gamma})", outdir / "/q3/_hist_corrected.png")
-    save_gamma_curve(args.gamma, outdir / "/q3/amma_curve.png")
-    save_side_by_side(orig01, corr01, args.gamma, outdir / "/q3/omparison.png")
+    # 2) Hist of original L
+    plot_hist_L(L, "Original L-channel Histogram",
+                outdir / "hist_L_original.png")
 
-    if not args.no_show:
-        plt.figure(); plt.imshow(orig01); plt.axis("off"); plt.title("Original")
-        plt.figure(); plt.imshow(corr01); plt.axis("off"); plt.title(f"Gamma L* (γ={args.gamma})")
-        plt.show()
+    # 3) Gamma on L using LUT
+    lut = gamma_lut(args.gamma)
+    L_gamma = lut[L]
 
-    print(f"Gamma: {args.gamma}")
-    print(f"L* mean/std (orig): {L01.mean():.4f}/{L01.std():.4f}")
-    print(f"L* mean/std (corr): {L01_corr.mean():.4f}/{L01_corr.std():.4f}")
+    # 4) Recombine and convert back to RGB
+    lab_gamma = cv2.merge([L_gamma, a, b])
+    bgr_gamma = cv2.cvtColor(lab_gamma, cv2.COLOR_LAB2BGR)
+    rgb_gamma = cv2.cvtColor(bgr_gamma, cv2.COLOR_BGR2RGB)
+    outdir.mkdir(parents=True, exist_ok=True)
+    save_rgb(rgb_gamma, out_img)
+
+    # 5) Hist of corrected L
+    plot_hist_L(
+        L_gamma, f"Gamma-corrected L (γ={args.gamma}) Histogram", outdir / "hist_L_gamma.png")
+
+    # 6) (Optional) Save the LUT curve used
+    x = np.arange(256)
+    plt.figure()
+    plt.plot(x, lut)
+    plt.xlim(0, 255)
+    plt.ylim(0, 255)
+    plt.xlabel("Input L")
+    plt.ylabel("Output L")
+    plt.title(f"LUT for Gamma (γ={args.gamma})")
+    plt.grid(True, alpha=0.3)
+    plt.savefig(outdir / "lut_gamma.png", bbox_inches="tight", dpi=150)
+    plt.close()
+    print("Saved:", outdir / "lut_gamma.png")
+
 
 if __name__ == "__main__":
     main()
