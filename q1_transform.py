@@ -3,31 +3,45 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-def build_lut():
-    xs = np.array([0, 50, 150, 255], dtype=np.float32)
-    ys = np.array([0, 100, 255, 255], dtype=np.float32)
-    x_all = np.arange(256, dtype=np.float32)
-    y_all = np.interp(x_all, xs, ys)
-    return y_all.astype(np.uint8)
+
+def build_lut() -> np.ndarray:
+
+    x = np.arange(256, dtype=np.float32)
+    y = np.empty_like(x)
+
+    # 0..50
+    m1 = x <= 50
+    y[m1] = 2.0 * x[m1]
+
+    # 50..150  (line from 100 to 255 over 100 steps → slope 155/100 = 1.55)
+    m2 = (x > 50) & (x <= 150)
+    y[m2] = 100.0 + (155.0 / 100.0) * (x[m2] - 50.0)
+
+    # >150  (identity)
+    m3 = x > 150
+    y[m3] = x[m3]
+
+    # enforce the vertical jump at exactly 150
+    y[150] = 255.0
+
+    return np.clip(y, 0, 255).astype(np.uint8)
 
 
 def apply_transform(img_path: Path, out_path: Path):
-    # Load as grayscale to apply the intensity mapping on a single channel
+    # Load as grayscale; transform is defined on intensity
     img = Image.open(img_path).convert("L")
     arr = np.array(img, dtype=np.uint8)
 
-    # Build LUT and map each pixel intensity
     lut = build_lut()
     out = lut[arr]
 
-    # Save result
     out_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(out).save(out_path)
     print("Saved:", out_path)
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Fig. 1a intensity transform")
     parser.add_argument("--input", default="/assets/emma.jpg")
     parser.add_argument("--output", default="outputs/q1/emma-output.png")
     args = parser.parse_args()

@@ -4,75 +4,74 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 
-def window_lut(low, high):
-    if high <= low:
-        high = low + 1
-    x = np.arange(256, dtype=np.float32)
-    y = (x - low) * (255.0 / (high - low))
-    y = np.clip(y, 0, 255)
-    return y.astype(np.uint8)
 
-def apply_lut(img_gray, lut):
-    return lut[img_gray]
+def build_lut(xs, ys):
+    xs = np.asarray(xs, dtype=np.float32)
+    ys = np.asarray(ys, dtype=np.float32)
+    xall = np.arange(256, dtype=np.float32)
+    yall = np.interp(xall, xs, ys)
+    return np.clip(yall, 0, 255).astype(np.uint8)
 
-def save_image(a, path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(a).save(path)
-    print("Saved:", path)
 
-def save_curve(lut, title, path):
+def apply_lut(img_u8, lut):
+    return lut[img_u8]
+
+
+def save_curve(lut, out_path, title):
+    x = np.arange(256, dtype=np.uint8)
     plt.figure()
-    plt.plot(np.arange(256), lut)
-    plt.xlabel("Input")
-    plt.ylabel("Output")
+    plt.plot(x, lut, linewidth=2)
     plt.title(title)
+    plt.xlabel("Input intensity")
+    plt.ylabel("Output intensity")
+    plt.grid(True, alpha=0.3)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(path)
+    plt.savefig(out_path, dpi=150)
     plt.close()
-    print("Saved:", path)
 
-def save_histogram(img_gray, path):
-    plt.figure()
-    plt.hist(img_gray.ravel(), bins=256, range=(0, 255))
-    plt.xlabel("Intensity")
-    plt.ylabel("Count")
-    plt.title("Histogram")
-    plt.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(path)
-    plt.close()
-    print("Saved:", path)
 
 def main():
-    p = argparse.ArgumentParser(description="Windowing (WM/GM) with plots")
-    p.add_argument("--input", default="assets/brain.png")
-    p.add_argument("--outdir", default="outputs")
-    p.add_argument("--wm", nargs=2, type=float, metavar=("LOW", "HIGH"))
-    p.add_argument("--gm", nargs=2, type=float, metavar=("LOW", "HIGH"))
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default=None)
+    parser.add_argument("--outdir", default=None)
+    args = parser.parse_args()
 
-    img = Image.open(args.input).convert("L")
-    I = np.array(img, dtype=np.uint8)
+    script_dir = Path(__file__).resolve().parent
+    in_path = Path(args.input) if args.input else (
+        script_dir / "assets" / "brain.png")
+    out_dir = Path(args.outdir) if args.outdir else (
+        script_dir / "outputs" / "q2")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    outdir = Path(args.outdir)
+    # Load as grayscale
+    img = Image.open(in_path).convert("L")
+    arr = np.array(img, dtype=np.uint8)
 
-    wm_low, wm_high = (135.0, 165.0) if not args.wm else tuple(args.wm)
-    gm_low, gm_high = (170.0, 200.0) if not args.gm else tuple(args.gm)
+    # Control points chosen to boost ~[60..120] range
+    xs_wm = [0,  60, 120, 255]
+    ys_wm = [0,   0, 255, 255]
+    lut_wm = build_lut(xs_wm, ys_wm)
+    out_wm = apply_lut(arr, lut_wm)
+    Image.fromarray(out_wm).save(out_dir / "brain_white_matter.png")
+    save_curve(lut_wm, out_dir / "curve_white_matter.png",
+               "Q2 (a): Transform for White Matter")
 
-    wm_lut = window_lut(wm_low, wm_high)
-    gm_lut = window_lut(gm_low, gm_high)
+    # Control points chosen to boost ~[90..170] range
+    xs_gm = [0,  90, 170, 255]
+    ys_gm = [0,   0, 255, 255]
+    lut_gm = build_lut(xs_gm, ys_gm)
+    out_gm = apply_lut(arr, lut_gm)
+    Image.fromarray(out_gm).save(out_dir / "brain_gray_matter.png")
+    save_curve(lut_gm, out_dir / "curve_gray_matter.png",
+               "Q2 (b): Transform for Gray Matter")
 
-    wm_img = apply_lut(I, wm_lut)
-    gm_img = apply_lut(I, gm_lut)
+    print("Saved:")
+    print("  ", out_dir / "brain_white_matter.png")
+    print("  ", out_dir / "curve_white_matter.png")
+    print("  ", out_dir / "brain_gray_matter.png")
+    print("  ", out_dir / "curve_gray_matter.png")
 
-    save_image(wm_img, outdir / "q2_wm_accentuated.png")
-    save_image(gm_img, outdir / "q2_gm_accentuated.png")
-
-    save_curve(wm_lut, f"WM window ({wm_low}, {wm_high})", outdir / "q2_wm_curve.png")
-    save_curve(gm_lut, f"GM window ({gm_low}, {gm_high})", outdir / "q2_gm_curve.png")
-
-    save_histogram(I, outdir / "q2_histogram.png")
 
 if __name__ == "__main__":
     main()
