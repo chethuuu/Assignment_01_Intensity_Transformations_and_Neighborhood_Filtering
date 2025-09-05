@@ -1,10 +1,7 @@
-from pathlib import Path
 import argparse
-import glob
+from pathlib import Path
 import numpy as np
 from PIL import Image
-
-# ---------------- basics ----------------
 
 
 def to_u8(img: Image.Image) -> np.ndarray:
@@ -23,131 +20,108 @@ def save(arr: np.ndarray, path: Path):
     Image.fromarray(arr).save(path)
     print("Saved:", path)
 
-# ---------------- zoom methods ----------------
-
-
+# part (a): nearest neighbor interpolation
 def zoom_nearest(src: np.ndarray, s: float) -> np.ndarray:
     if not (0 < s <= 10):
         raise ValueError("s in (0,10].")
     src3 = as_3d(src)
     H, W, C = src3.shape
     Ho, Wo = max(1, int(round(H * s))), max(1, int(round(W * s)))
-    out = np.empty((Ho, Wo, C), dtype=np.uint8)
-    for i in range(Ho):
-        x = min(H - 1, int(round(i / s)))
-        for j in range(Wo):
-            y = min(W - 1, int(round(j / s)))
-            out[i, j] = src3[x, y]
-    return out if C > 1 else out[:, :, 0]
+    ys = np.clip((np.arange(Ho) / s).round().astype(int), 0, H - 1)
+    xs = np.clip((np.arange(Wo) / s).round().astype(int), 0, W - 1)
+    out = src3[ys[:, None], xs[None, :], :]
+    out = out if src.ndim == 3 else out[:, :, 0]
+    return out.astype(np.uint8)
 
-
+# part (b): bilinear interpolation
 def zoom_bilinear(src: np.ndarray, s: float) -> np.ndarray:
     if not (0 < s <= 10):
         raise ValueError("s in (0,10].")
     src3 = as_3d(src).astype(np.float32)
     H, W, C = src3.shape
     Ho, Wo = max(1, int(round(H * s))), max(1, int(round(W * s)))
-    out = np.empty((Ho, Wo, C), dtype=np.float32)
-    for i in range(Ho):
-        x = i / s
-        x0, x1 = int(np.floor(x)), min(int(np.floor(x)) + 1, H - 1)
-        ax = x - x0
-        for j in range(Wo):
-            y = j / s
-            y0, y1 = int(np.floor(y)), min(int(np.floor(y)) + 1, W - 1)
-            ay = y - y0
-            p00, p01 = src3[x0, y0], src3[x0, y1]
-            p10, p11 = src3[x1, y0], src3[x1, y1]
-            top = (1 - ay) * p00 + ay * p01
-            bot = (1 - ay) * p10 + ay * p11
-            out[i, j] = (1 - ax) * top + ax * bot
-    out = np.clip(out, 0, 255).astype(np.uint8)
-    return out if C > 1 else out[:, :, 0]
 
-# ---------------- metrics ----------------
+    y = np.arange(Ho, dtype=np.float32) / s
+    x = np.arange(Wo, dtype=np.float32) / s
+    y0 = np.floor(y).astype(int); x0 = np.floor(x).astype(int)
+    y1 = np.clip(y0 + 1, 0, H - 1); x1 = np.clip(x0 + 1, 0, W - 1)
+    y0 = np.clip(y0, 0, H - 1);     x0 = np.clip(x0, 0, W - 1)
 
+    wy = (y - y0).reshape(-1, 1, 1)
+    wx = (x - x0).reshape(1, -1, 1)
 
-def normalized_ssd(a: np.ndarray, b: np.ndarray) -> float:
-    if a.shape != b.shape:
-        raise ValueError("Shape mismatch.")
-    a, b = a.astype(np.float32), b.astype(np.float32)
-    return float(np.mean((a - b) ** 2) / (255.0 ** 2))
+    Ia = src3[y0[:, None], x0[None, :], :]
+    Ib = src3[y0[:, None], x1[None, :], :]
+    Ic = src3[y1[:, None], x0[None, :], :]
+    Id = src3[y1[:, None], x1[None, :], :]
 
-# ---------------- helpers ----------------
+    top = Ia * (1 - wx) + Ib * wx
+    bot = Ic * (1 - wx) + Id * wx
+    out = top * (1 - wy) + bot * wy
+    out = out if src.ndim == 3 else out[:, :, 0]
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def crop_center(x: np.ndarray, H: int, W: int) -> np.ndarray:
-    h, w = x.shape[:2]
-    y0, x0 = (h - H) // 2, (w - W) // 2
-    return x[y0:y0+H, x0:x0+W]
+def nssd(a: np.ndarray, b: np.ndarray) -> float:
+    a3, b3 = as_3d(a.astype(np.float32)), as_3d(b.astype(np.float32))
+    if a3.shape != b3.shape:
+        raise ValueError("Shapes must match for SSD.")
+    diff2 = (a3 - b3) ** 2
+    return float(diff2.mean() / (255.0 ** 2))
 
 
-def find_pairs():
-    exts = ("png", "jpg", "jpeg", "bmp")
-    smalls = []
-    for e in exts:
-        smalls += glob.glob(f"*_*small*.{e}") + glob.glob(f"*_small.{e}")
-    # map {base: path}
-    larges = {}
-    for e in exts:
-        for p in glob.glob(f"*_*large*.{e}") + glob.glob(f"*_large.{e}"):
-            base = Path(p).stem.replace("_large", "")
-            larges[base] = p
-    pairs = []
-    for s in smalls:
-        base = Path(s).stem.replace("_small", "")
-        if base in larges:
-            pairs.append((s, larges[base], base))
-    return pairs
+def run_zoom(input_path: Path, s: float, method: str, out_path: Path):
+    img = to_u8(Image.open(input_path))
+    if method == "nearest":
+        out = zoom_nearest(img, s)
+    elif method == "bilinear":
+        out = zoom_bilinear(img, s)
+    else:
+        raise ValueError("method must be 'nearest' or 'bilinear'")
+    save(out, out_path)
 
-# ---------------- CLI ----------------
+
+def run_ssd_tests(root: Path):
+    pairs = [
+        (root / "im01small.png", root / "im01.png"),
+        (root / "im02small.png", root / "im02.png"),
+        (root / "im03small.png", root / "im03.png"),
+        (root / "taylor_small.jpg", root / "taylor.jpg"),
+    ]
+    for small, large in pairs:
+        if not (small.exists() and large.exists()):
+            continue
+        sm = to_u8(Image.open(small))
+        lg = to_u8(Image.open(large))
+        up_near = zoom_nearest(sm, 4.0)
+        up_blin = zoom_bilinear(sm, 4.0)
+        if up_near.shape != lg.shape:
+            # if originals differ slightly, center-crop to match
+            H = min(up_near.shape[0], lg.shape[0])
+            W = min(up_near.shape[1], lg.shape[1])
+            up_near = up_near[:H, :W, ...] if up_near.ndim == 3 else up_near[:H, :W]
+            up_blin = up_blin[:H, :W, ...] if up_blin.ndim == 3 else up_blin[:H, :W]
+            lg = lg[:H, :W, ...] if lg.ndim == 3 else lg[:H, :W]
+        ssd_near = nssd(up_near, lg)
+        ssd_blin = nssd(up_blin, lg)
+        print(f"{small.name} → {large.name}: NSSD(nearest)={ssd_near:.6f}, NSSD(bilinear)={ssd_blin:.6f}")
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="Image zoom (nearest/bilinear) + 4x SSD test")
-    ap.add_argument("--in", dest="inp", help="Input image path")
-    ap.add_argument("--scale", type=float, default=2.0, help="s in (0,10]")
-    ap.add_argument(
-        "--method", choices=["nearest", "bilinear"], default="bilinear")
-    ap.add_argument("--out", dest="outp", help="Output path")
-    ap.add_argument("--run-ssd-test", action="store_true",
-                    help="Compare *_small.* upscaled x4 vs *_large.* originals")
-    args = ap.parse_args()
+    p = argparse.ArgumentParser(description="Q7: image zoom (nearest/bilinear) + SSD tests.")
+    p.add_argument("--input", type=str, help="Path to input image")
+    p.add_argument("--scale", type=float, default=2.0, help="Scale s in (0,10]")
+    p.add_argument("--method", choices=["nearest", "bilinear"], default="nearest")
+    p.add_argument("--output", type=str, default="outputs/q7/out.png")
+    p.add_argument("--assets_dir", type=str, default="assets", help="Folder containing im01small.png, etc. for SSD test")
+    p.add_argument("--run-ssd-test", action="store_true", help="Evaluate NSSD at x4 on provided small/original pairs")
+    args = p.parse_args()
+
+    if args.input:
+        run_zoom(Path(args.input), args.scale, args.method, Path(args.output))
 
     if args.run_ssd_test:
-        pairs = find_pairs()
-        if not pairs:
-            print("No *_small.* / *_large.* pairs found in CWD.")
-            return
-        print("Image\t\tSSD(nearest)\tSSD(bilinear)")
-        outdir = Path("out_q7")
-        for sp, lp, base in pairs:
-            small = to_u8(Image.open(sp))
-            large = to_u8(Image.open(lp))
-            zn = zoom_nearest(small, 4.0)
-            zb = zoom_bilinear(small, 4.0)
-            H, W = min(large.shape[0], zn.shape[0], zb.shape[0]), \
-                min(large.shape[1], zn.shape[1], zb.shape[1])
-            Lc, Nc, Bc = crop_center(large, H, W), crop_center(
-                zn, H, W), crop_center(zb, H, W)
-            ssd_n, ssd_b = normalized_ssd(Nc, Lc), normalized_ssd(Bc, Lc)
-            print(f"{base}\t\t{ssd_n:.6f}\t{ssd_b:.6f}")
-            save(zn, outdir / f"{base}_x4_nearest.png")
-            save(zb, outdir / f"{base}_x4_bilinear.png")
-        print("Note: lower SSD = better (closer to original).")
-        return
-
-    if not args.inp:
-        print("Provide --in <image> or use --run-ssd-test")
-        return
-
-    img = to_u8(Image.open(args.inp))
-    out = zoom_nearest(
-        img, args.scale) if args.method == "nearest" else zoom_bilinear(img, args.scale)
-    out_path = Path(args.outp) if args.outp else Path(
-        f"zoom_{args.method}_s{args.scale:.2f}.png")
-    save(out, out_path)
+        run_ssd_tests(Path(args.assets_dir))
 
 
 if __name__ == "__main__":
