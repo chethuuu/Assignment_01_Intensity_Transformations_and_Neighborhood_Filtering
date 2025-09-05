@@ -1,86 +1,83 @@
 import argparse
 from pathlib import Path
 import numpy as np
+from PIL import Image
+import cv2
 import matplotlib.pyplot as plt
-from skimage import io, color, img_as_float, img_as_ubyte
 
-def ensure_dir(p):
-    p.parent.mkdir(parents=True, exist_ok=True)
 
-def boost_sat(x255, a, sigma):
-    # f(x) = min(x + a*128*exp(-(x-128)^2/(2*sigma^2)), 255)
-    bump = a * 128.0 * np.exp(-((x255 - 128.0) ** 2) / (2.0 * sigma ** 2))
-    return np.minimum(x255 + bump, 255.0)
+def load_rgb(path: Path) -> np.ndarray:
+    return np.array(Image.open(path).convert("RGB"))
 
-def save_curve(a, sigma, path):
-    x = np.linspace(0, 255, 512)
-    y = boost_sat(x, a, sigma)
+
+def save_rgb(rgb: np.ndarray, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(rgb).save(path)
+    print("Saved:", path)
+
+
+def vibrance_lut(a: float = 0.7, sigma: float = 70.0) -> np.ndarray:
+    """
+    Build 256-value LUT for:
+        f(x) = min( x + a*128*exp(-((x-128)^2)/(2*sigma^2)), 255 )
+    x in [0,255], returns uint8.
+    """
+    x = np.arange(256, dtype=np.float32)
+    boost = a * 128.0 * np.exp(-((x - 128.0) ** 2) / (2.0 * sigma ** 2))
+    y = np.minimum(x + boost, 255.0)
+    return y.astype(np.uint8)
+
+
+def plot_curve(lut: np.ndarray, title: str, out_path: Path):
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    x = np.arange(256)
     plt.figure()
-    plt.plot(x, y)
-    plt.xlabel("S in (0–255)")
-    plt.ylabel("S out (0–255)")
-    plt.title(f"Vibrance transform (a={a}, σ={sigma})")
-    plt.tight_layout()
-    ensure_dir(path)
-    plt.savefig(path)
+    plt.plot(x, lut)
+    plt.xlim(0, 255)
+    plt.ylim(0, 255)
+    plt.xlabel("Input saturation")
+    plt.ylabel("Output saturation")
+    plt.title(title)
+    plt.grid(True, alpha=0.3)
+    plt.savefig(out_path, bbox_inches="tight", dpi=150)
     plt.close()
-    print("Saved:", path)
+    print("Saved:", out_path)
 
-def save_side_by_side(orig01, out01, a, sigma, path):
-    plt.figure(figsize=(10, 4.5))
-    plt.subplot(1, 2, 1); plt.imshow(orig01); plt.axis("off"); plt.title("Original")
-    plt.subplot(1, 2, 2); plt.imshow(out01);  plt.axis("off"); plt.title(f"Vibrance (a={a}, σ={sigma})")
-    plt.tight_layout()
-    ensure_dir(path)
-    plt.savefig(path, dpi=150)
-    plt.close()
-    print("Saved:", path)
 
 def main():
-    p = argparse.ArgumentParser(description="Q4: Vibrance via S boost (HSV)")
-    p.add_argument("--input",  default="assets/spiderman.png")
-    p.add_argument("--outdir", default="outputs")
-    p.add_argument("--a",      type=float, default=0.6)
-    p.add_argument("--sigma",  type=float, default=70.0)
-    p.add_argument("--no-show", action="store_true")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(
+        description="Q4: Vibrance enhancement on S channel (HSV).")
+    parser.add_argument("--input", default="assets/spiderman.png")
+    parser.add_argument("--outdir", default="outputs/q4")
+    parser.add_argument("--a", type=float, default=0.7,
+                        help="Strength parameter a in [0,1].")
+    parser.add_argument("--sigma", type=float, default=70.0,
+                        help="Sigma for Gaussian boost (default 70).")
+    args = parser.parse_args()
 
     in_path = Path(args.input)
     outdir = Path(args.outdir)
-    a, sigma = args.a, args.sigma
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    # Read & to HSV
-    img = io.imread(str(in_path))
-    if img.ndim == 3 and img.shape[-1] == 4:
-        img = img[..., :3]
-    rgb01 = img_as_float(img)
-    hsv = color.rgb2hsv(rgb01)
-    S = hsv[..., 1]
+    # Load RGB → HSV
+    rgb = load_rgb(in_path)
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    H, S, V = cv2.split(hsv)
 
-    # Boost S in 0..255 space
-    S255 = np.clip(S * 255.0, 0, 255)
-    S255_boost = boost_sat(S255, a, sigma)
-    S_boost = np.clip(S255_boost / 255.0, 0, 1)
+    # Build LUT and apply on Saturation
+    lut = vibrance_lut(a=args.a, sigma=args.sigma)
+    S_new = lut[S]
 
-    # Recombine & save
-    hsv_out = hsv.copy()
-    hsv_out[..., 1] = S_boost
-    rgb_out = np.clip(color.hsv2rgb(hsv_out), 0, 1)
+    # Merge and convert back to RGB
+    hsv_new = cv2.merge([H, S_new, V])
+    rgb_new = cv2.cvtColor(hsv_new, cv2.COLOR_HSV2RGB)
 
-    enhanced = outdir / "q4_vibrance_enhanced.png"
-    ensure_dir(enhanced)
-    io.imsave(str(enhanced), img_as_ubyte(rgb_out))
-    print("Saved:", enhanced)
+    # Save outputs
+    save_rgb(rgb, outdir / "original.png")
+    save_rgb(rgb_new, outdir / "vibrance_a{:.2f}.png".format(args.a))
+    plot_curve(
+        lut, f"Vibrance transform (a={args.a}, σ={args.sigma})", outdir / "vibrance_curve.png")
 
-    save_curve(a, sigma, outdir / "q4_vibrance_transform_curve.png")
-    save_side_by_side(rgb01, rgb_out, a, sigma, outdir / "q4_vibrance_comparison.png")
-
-    if not args.no_show:
-        plt.figure(); plt.imshow(rgb01); plt.axis("off"); plt.title("Original")
-        plt.figure(); plt.imshow(rgb_out); plt.axis("off"); plt.title(f"Vibrance (a={a}, σ={sigma})")
-        plt.show()
-
-    print(f"Chosen a={a}, sigma={sigma}")
 
 if __name__ == "__main__":
     main()
