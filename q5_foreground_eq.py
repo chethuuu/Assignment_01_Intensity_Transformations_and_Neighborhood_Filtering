@@ -1,145 +1,65 @@
 import argparse
 from pathlib import Path
 import numpy as np
-import cv2 as cv
+import cv2
 from PIL import Image
-import matplotlib.pyplot as plt
 
-# ---------------------- utils ----------------------
-def ensure_rgb(path: Path) -> np.ndarray:
-    img = Image.open(path).convert("RGB")
-    return np.array(img, dtype=np.uint8)
 
-def save_gray(a: np.ndarray, path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(a).save(path)
-    print(f"Saved: {path}")
+def save_gray(a, p):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(a).save(p)
 
-def save_rgb(a: np.ndarray, path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(a).save(path)
-    print(f"Saved: {path}")
 
-def plot_hist_and_cdf(vals: np.ndarray, out_hist: Path, out_cdf: Path):
-    counts, bins = np.histogram(vals, bins=256, range=(0, 256))
-    cdf = np.cumsum(counts)
+def save_rgb(a, p):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(cv2.cvtColor(a, cv2.COLOR_BGR2RGB)).save(p)
 
-    # histogram
-    plt.figure()
-    plt.bar(bins[:-1], counts, width=1.0)
-    plt.title("Foreground Value-channel histogram")
-    plt.xlabel("Intensity")
-    plt.ylabel("Count")
-    plt.tight_layout()
-    out_hist.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_hist)
-    plt.close()
-    print(f"Saved: {out_hist}")
 
-    # cdf
-    plt.figure()
-    plt.plot(np.arange(256), cdf)
-    plt.title("Cumulative sum (CDF) of foreground histogram")
-    plt.xlabel("Intensity")
-    plt.ylabel("Cumulative count")
-    plt.tight_layout()
-    plt.savefig(out_cdf)
-    plt.close()
-    print(f"Saved: {out_cdf}")
+def hist_eq_foreground(img_bgr, outdir: Path):
+    # (a) Convert to HSV and split into H, S, V planes
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    H, S, V = cv2.split(hsv)
+    save_gray(H, outdir / "H.png")
+    save_gray(S, outdir / "S.png")
+    save_gray(V, outdir / "V.png")
 
-    return counts, cdf
+    # (b) Threshold S channel to create a binary mask for the foreground
+    _, thr = cv2.threshold(S, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = (S > thr).astype(np.uint8) * 255
+    save_gray(mask, outdir / "mask.png")
 
-def first_existing(*cands: Path) -> Path:
-    for p in cands:
-        if p.exists():
-            return p
-    raise FileNotFoundError("None of these exist: " + ", ".join(map(str, cands)))
+    # (c) Obtain foreground values of V using the mask and compute histogram
+    fg_vals = V[mask == 255]
+    hist = np.bincount(fg_vals, minlength=256).astype(np.float64)
 
-# ---------------------- core steps ----------------------
-def equalize_foreground_v_channel(hsv: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """
-    Histogram-equalize only the Value (V) channel for pixels where mask==255.
-    Returns a new HSV array.
-    """
-    h, s, v = cv.split(hsv)
-    v = v.copy()
-
-    fg_vals = v[mask > 0]
-    # (d) cumulative sum
-    hist, _ = np.histogram(fg_vals, bins=256, range=(0, 256))
+    # (d) Compute cumulative histogram (CDF)
     cdf = np.cumsum(hist)
+    cdf /= cdf[-1]
 
-    # (e) classical HE mapping on foreground pixels only
-    cdf_nonzero = cdf[cdf > 0]
-    if len(cdf_nonzero) == 0:
-        lut = np.arange(256, dtype=np.uint8)
-    else:
-        cdf_min = cdf_nonzero[0]
-        lut = np.round((cdf - cdf_min) / (cdf[-1] - cdf_min + 1e-12) * 255.0)
-        lut = np.clip(lut, 0, 255).astype(np.uint8)
+    # (e) Build LUT from CDF and histogram-equalize the foreground
+    lut = np.round(255.0 * cdf).astype(np.uint8)
+    V_eq = V.copy()
+    V_eq[mask == 255] = lut[V[mask == 255]]
 
-    v_eq = v.copy()
-    v_eq[mask > 0] = lut[v[mask > 0]]
+    # (f) Recombine with background and save final result
+    hsv_eq = cv2.merge([H, S, V_eq])
+    bgr_eq = cv2.cvtColor(hsv_eq, cv2.COLOR_HSV2BGR)
+    return bgr_eq
 
-    return cv.merge([h, s, v_eq]), hist, cdf
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="Q5 – Histogram equalization on foreground only (Fig. 5)"
-    )
-    ap.add_argument("--input", default="assets/jennifer.jpg",
-                    help="Input color image. Tries jeniffer.jpg if not found.")
-    ap.add_argument("--outdir", default="outputs/q5", help="Directory for results")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", default="/assests/jeniffer.jpg")
+    ap.add_argument("--outdir", default="outputs/q5")
     args = ap.parse_args()
 
-    base = Path(__file__).resolve().parent
-    in_path = Path(args.input)
-    if not in_path.is_absolute():
-        in_path = first_existing(
-            base / args.input,
-            base / "assets/jennifer.jpg",
-            base / "assets/jeniffer.jpg",
-        )
-    img_rgb = ensure_rgb(in_path)
     outdir = Path(args.outdir)
+    img = cv2.imread(args.input, cv2.IMREAD_COLOR)
 
-    img_bgr = cv.cvtColor(img_rgb, cv.COLOR_RGB2BGR)
-    hsv = cv.cvtColor(img_bgr, cv.COLOR_BGR2HSV)  
-    H, S, V = cv.split(hsv)
+    save_rgb(img, outdir / "original.png")
+    result = hist_eq_foreground(img, outdir)
+    save_rgb(result, outdir / "result_eq_foreground.png")
 
-    H_vis = (H.astype(np.float32) * (255.0 / 179.0)).astype(np.uint8)
-    save_gray(H_vis, outdir / "q5a_h_plane.png")
-    save_gray(S,     outdir / "q5a_s_plane.png")
-    save_gray(V,     outdir / "q5a_v_plane.png")
-
-
-    S_blur = cv.GaussianBlur(S, (5, 5), 0)
-    _, mask = cv.threshold(S_blur, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
-
-    kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, (5, 5))
-    mask = cv.morphologyEx(mask, cv.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv.morphologyEx(mask, cv.MORPH_OPEN,  kernel, iterations=1)
-    save_gray(mask, outdir / "q5b_mask.png")
-
-    fg_rgb = cv.bitwise_and(img_rgb, img_rgb, mask=mask)
-    save_rgb(fg_rgb, outdir / "q5c_foreground_rgb.png")
-
-    plot_hist_and_cdf(V[mask > 0], outdir / "q5d_fg_hist.png", outdir / "q5d_fg_cdf.png")
-
-    hsv_eq, hist_fg, cdf_fg = equalize_foreground_v_channel(hsv, mask)
-
-    bgr_eq = cv.cvtColor(hsv_eq, cv.COLOR_HSV2BGR)
-    rgb_eq = cv.cvtColor(bgr_eq, cv.COLOR_BGR2RGB)
-    save_rgb(img_rgb, outdir / "q5f_original_rgb.png")
-    save_rgb(rgb_eq,  outdir / "q5f_result_rgb.png")
-
-    inv = cv.bitwise_not(mask)
-    bg_rgb = cv.bitwise_and(img_rgb, img_rgb, mask=inv)
-    fg_eq_rgb = cv.bitwise_and(rgb_eq, rgb_eq, mask=mask)
-    save_rgb(bg_rgb,     outdir / "q5f_background_rgb.png")
-    save_rgb(fg_eq_rgb,  outdir / "q5f_foreground_eq_rgb.png")
-
-    print(f"Done. Results saved in {outdir.resolve()}")
 
 if __name__ == "__main__":
     main()
