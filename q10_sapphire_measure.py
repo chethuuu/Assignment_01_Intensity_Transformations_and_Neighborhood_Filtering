@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 # -------------------- Config --------------------
 IMAGE_PATH = "./assets/sapphire.jpg"
-OUT_DIR = "outputs_q10"
+OUT_DIR = "outputs"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # Camera / geometry
