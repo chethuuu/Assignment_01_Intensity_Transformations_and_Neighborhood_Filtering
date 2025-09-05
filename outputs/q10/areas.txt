@@ -1,0 +1,4 @@
+f = 8.0 mm,  Z = 480.0 mm,  pixel_pitch = 4.0 um
+mm per pixel on table plane ≈ 0.240000 mm/px
+Sapphire 1: 30165 px  →  1737.50 mm^2
+Sapphire 2: 34227 px  →  1971.48 mm^2

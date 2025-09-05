@@ -1,179 +1,99 @@
-
-import os
+import argparse
+from pathlib import Path
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
+from PIL import Image
 
-# -------------------- Config --------------------
-IMAGE_PATH = "./assets/sapphire.jpg"
-OUT_DIR = "outputs"
-os.makedirs(OUT_DIR, exist_ok=True)
+def save_u8(img, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(img).save(path)
+    print("Saved:", path)
 
-# Camera / geometry
-F_MM = 8.0
-Z_MM = 480.0
-PIXEL_PITCH_UM = 1.12
+def save_rgb(bgr, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)).save(path)
+    print("Saved:", path)
 
-# Min component size (px) to keep (avoid tiny noise)
-MIN_AREA_PX = 200
-
-# -------------------- Helpers --------------------
-
-
-def fill_holes(binary_u8: np.ndarray) -> np.ndarray:
-    h, w = binary_u8.shape
-    inv = cv2.bitwise_not(binary_u8)
+def fill_holes(bw: np.ndarray) -> np.ndarray:
+    h, w = bw.shape
+    ff = np.zeros((h+2, w+2), np.uint8)
+    inv = 255 - bw
     flood = inv.copy()
-    fmask = np.zeros((h+2, w+2), np.uint8)
-    cv2.floodFill(flood, fmask, (0, 0), 255)
-    holes = cv2.bitwise_not(flood)
-    filled = cv2.bitwise_or(binary_u8, holes)
-    return filled
+    cv2.floodFill(flood, ff, (0, 0), 255)
+    holes = 255 - flood
+    return cv2.bitwise_or(bw, holes)
 
+def main():
+    p = argparse.ArgumentParser(description="Q10: Sapphires segmentation, morphology, area (pixels/mm^2).")
+    p.add_argument("--input", default="assets/q10/sapphires.png")
+    p.add_argument("--outdir", default="outputs/q10")
+    p.add_argument("--f_mm", type=float, default=8.0, help="lens focal length f (mm)")
+    p.add_argument("--Z_mm", type=float, default=480.0, help="camera height above table Z (mm)")
+    p.add_argument("--pixel_pitch_um", type=float, default=4.0, help="sensor pixel pitch (micrometers)")
+    args = p.parse_args()
 
-def connected_components(mask_u8: np.ndarray, min_area=MIN_AREA_PX):
-    num, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        (mask_u8 > 0).astype(np.uint8), connectivity=8
-    )
-    areas, bboxes, ids = [], [], []
-    for i in range(1, num):
+    out = Path(args.outdir); out.mkdir(parents=True, exist_ok=True)
+
+    bgr = cv2.imread(args.input, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise FileNotFoundError(f"Cannot read {args.input}")
+    save_rgb(bgr, out / "0_original.png")
+
+    # (a) SEGMENTATION (HSV threshold for blue + cleanup)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    # OpenCV H in [0,179]. Blue ~ [100, 140].
+    lo1 = np.array([100, 60, 40], dtype=np.uint8)
+    hi1 = np.array([140, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lo1, hi1)
+    save_u8(mask, out / "1a_mask_raw.png")
+
+    # (b) MORPHOLOGY to fill/clean (open->close, then hole fill)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask2 = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+    mask2 = cv2.morphologyEx(mask2, cv2.MORPH_CLOSE, k, iterations=2)
+    mask_filled = fill_holes(mask2)
+    save_u8(mask_filled, out / "1b_mask_filled.png")
+
+    # (c) CONNECTED COMPONENTS AREAS (pixels)
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_filled, connectivity=8)
+    # keep only sizeable components (remove crumbs)
+    areas_px = []
+    label_keep = np.zeros_like(labels, dtype=np.uint8)
+    for i in range(1, n):
         area = int(stats[i, cv2.CC_STAT_AREA])
-        if area >= min_area:
-            areas.append(area)
-            bboxes.append(stats[i, :4])
-            ids.append(i)
-    return areas, bboxes, ids, labels
+        if area > 200:  # small debris removal
+            areas_px.append(area)
+            label_keep[labels == i] = 255
+    save_u8(label_keep, out / "2_components.png")
 
+    # overlay visualization
+    vis = bgr.copy()
+    rng = np.random.default_rng(0)
+    for i, area in enumerate(areas_px, start=1):
+        y, x = np.argwhere((labels>0) & (label_keep>0))[0]
+    overlay = bgr.copy()
+    colored = cv2.cvtColor(label_keep, cv2.COLOR_GRAY2BGR)
+    colored[colored[:,:,0]>0] = [0,255,255]
+    vis = cv2.addWeighted(bgr, 0.8, colored, 0.2, 0)
+    save_rgb(vis, out / "2_components_overlay.png")
 
-def split_into_two(mask_u8: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    ys, xs = np.where(mask_u8 > 0)
-    coords = np.stack([xs, ys], axis=1).astype(np.float32)
-    if coords.shape[0] < 2:
-        return mask_u8.copy(), np.zeros_like(mask_u8)
+    # (d) ACTUAL AREAS IN mm^2  (requires pixel pitch)
+    # Magnification m = f/Z  ⇒ world_length = (Z/f) * sensor_length
+    # pixel pitch p (mm) = pixel_pitch_um / 1000.
+    p_mm = args.pixel_pitch_um / 1000.0
+    scale_world_per_px = (args.Z_mm / args.f_mm) * p_mm      # mm per pixel in the table plane
+    px2mm2 = (scale_world_per_px ** 2)
+    areas_mm2 = [a * px2mm2 for a in areas_px]
 
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.1)
-    K = 2
-    _, labels_k, _ = cv2.kmeans(
-        coords, K, None, criteria, 10, cv2.KMEANS_PP_CENTERS)
-    labels_k = labels_k.flatten()
+    # Save a small report
+    with open(out / "areas.txt", "w") as f:
+        f.write(f"f = {args.f_mm} mm,  Z = {args.Z_mm} mm,  pixel_pitch = {args.pixel_pitch_um} um\n")
+        f.write(f"mm per pixel on table plane ≈ {scale_world_per_px:.6f} mm/px\n")
+        for idx, (apx, amm2) in enumerate(zip(areas_px, areas_mm2), start=1):
+            f.write(f"Sapphire {idx}: {apx} px  →  {amm2:.2f} mm^2\n")
+    print(f"Estimated areas (mm^2): {['%.2f'%x for x in areas_mm2]}")
+    save_rgb((bgr * (mask_filled[...,None]//255)).astype(np.uint8), out / "1c_foreground.png")
+    save_rgb((bgr * (1 - mask_filled[...,None]//255)).astype(np.uint8), out / "1d_background.png")
 
-    mask1 = np.zeros_like(mask_u8, dtype=np.uint8)
-    mask2 = np.zeros_like(mask_u8, dtype=np.uint8)
-    mask1[ys[labels_k == 0], xs[labels_k == 0]] = 255
-    mask2[ys[labels_k == 1], xs[labels_k == 1]] = 255
-    return mask1, mask2
-
-
-def px_area_to_mm2(area_px: int, f_mm: float, z_mm: float, pixel_pitch_um: float) -> float:
-    p_mm = pixel_pitch_um / 1000.0
-    scale = (z_mm / f_mm) ** 2
-    return area_px * scale * (p_mm ** 2)
-
-
-# -------------------- 1) Load image --------------------
-assert os.path.exists(IMAGE_PATH), f"Image not found: {IMAGE_PATH}"
-bgr = cv2.imread(IMAGE_PATH, cv2.IMREAD_COLOR)
-assert bgr is not None, "Failed to read image with OpenCV."
-rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-
-# -------------------- 2) Segmentation (color + morphology) --------------------
-lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-L, a, b = cv2.split(lab)
-b_inv = 255 - b
-_, mask0 = cv2.threshold(b_inv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-# Morphology
-ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-mask_clean = cv2.morphologyEx(mask0, cv2.MORPH_OPEN, ker, iterations=1)
-mask_clean = cv2.morphologyEx(mask_clean, cv2.MORPH_CLOSE, ker, iterations=2)
-
-# (b) Fill holes
-mask_filled = fill_holes(mask_clean)
-
-# -------------------- 3) Connected components (try straight; else split) --------------------
-areas_px, bboxes, ids, labels = connected_components(mask_filled, MIN_AREA_PX)
-
-# If we didn’t get 2 components, split by spatial k-means
-if len(areas_px) != 2:
-    m1, m2 = split_into_two(mask_filled)
-    # Recompute stats on each split mask
-    areas1, _, _, _ = connected_components(m1, MIN_AREA_PX)
-    areas2, _, _, _ = connected_components(m2, MIN_AREA_PX)
-    # If either split is empty, fall back to raw counts
-    if len(areas1) == 0 or len(areas2) == 0:
-        # keep original (even if 1 blob)
-        masks_final = [mask_filled]
-        areas_final_px = areas_px if areas_px else [
-            int((mask_filled > 0).sum())]
-    else:
-        masks_final = [m1, m2]
-        areas_final_px = [int((m1 > 0).sum()), int((m2 > 0).sum())]
-else:
-    # Already two components
-    masks_final = []
-    for comp_id in ids:
-        masks_final.append((labels == comp_id).astype(np.uint8) * 255)
-    areas_final_px = areas_px
-
-# Sort by area (desc) for stable reporting
-order = np.argsort(areas_final_px)[::-1]
-areas_final_px = [areas_final_px[i] for i in order]
-masks_final = [masks_final[i] for i in order]
-
-# -------------------- 4) Convert px areas -> mm^2 --------------------
-areas_mm2 = [px_area_to_mm2(a, F_MM, Z_MM, PIXEL_PITCH_UM)
-             for a in areas_final_px]
-
-# -------------------- 5) Visualizations & outputs --------------------
-# Pipeline figure
-fig = plt.figure(figsize=(12, 6))
-plt.subplot(231)
-plt.imshow(rgb)
-plt.title("Original")
-plt.axis("off")
-plt.subplot(232)
-plt.imshow(b_inv, cmap="gray")
-plt.title("Lab b (inverted)")
-plt.axis("off")
-plt.subplot(233)
-plt.imshow(mask0, cmap="gray")
-plt.title("Otsu threshold")
-plt.axis("off")
-plt.subplot(234)
-plt.imshow(mask_clean, cmap="gray")
-plt.title("Morph clean")
-plt.axis("off")
-plt.subplot(235)
-plt.imshow(mask_filled, cmap="gray")
-plt.title("Holes filled")
-plt.axis("off")
-# Overlay boxes/contours for final masks
-overlay = rgb.copy()
-for mk in masks_final:
-    cnts, _ = cv2.findContours(mk, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(overlay, cnts, -1, (255, 0, 0), 2)
-plt.subplot(236)
-plt.imshow(overlay)
-plt.title("Final regions")
-plt.axis("off")
-
-pipeline_path = os.path.join(OUT_DIR, "sapphire_segmentation_pipeline.png")
-fig.savefig(pipeline_path, bbox_inches="tight", dpi=160)
-plt.close(fig)
-
-# Save each final mask (optional)
-for i, mk in enumerate(masks_final, 1):
-    cv2.imwrite(os.path.join(OUT_DIR, f"sapphire_mask_{i}.png"), mk)
-
-# Print results
-print("=== Q10 Results ===")
-print(
-    f"Pixel pitch: {PIXEL_PITCH_UM:.2f} µm   |   f = {F_MM} mm,  Z = {Z_MM} mm")
-for i, (a_px, a_mm2) in enumerate(zip(areas_final_px, areas_mm2), 1):
-    print(
-        f"Sapphire {i}:  area_px = {a_px:,} px   ->   area = {a_mm2:.2f} mm^2")
-
-print(f"\nSaved pipeline figure: {pipeline_path}")
-for i in range(len(masks_final)):
-    print(
-        f"Saved mask {i+1}: {os.path.join(OUT_DIR, f'sapphire_mask_{i+1}.png')}")
+if __name__ == "__main__":
+    main()
