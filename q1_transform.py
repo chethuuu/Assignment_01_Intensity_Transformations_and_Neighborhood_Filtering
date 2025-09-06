@@ -41,7 +41,7 @@ def apply_transform(img_path: Path, out_path: Path):
 def main():
     parser = argparse.ArgumentParser(description="Fig. 1a intensity transform")
     parser.add_argument("--input", default="/assets/emma.jpg")
-    parser.add_argument("--output", default="outputs/q1/emma-output.png")
+    parser.add_argument("--output", default="/outputs/q1/emma-output.png")
     args = parser.parse_args()
 
     apply_transform(Path(args.input), Path(args.output))
