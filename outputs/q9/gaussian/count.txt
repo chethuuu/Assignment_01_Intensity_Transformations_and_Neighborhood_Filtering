@@ -1,1 +1,6 @@
-Estimated rice grain count: 63
+Input: rice_gaussian.png
+Mode: Gaussian
+Otsu threshold: 127.00
+Min area kept: 50 px
+Counted rice grains: 39
+Areas (px): [68, 4924, 514, 141, 6309, 135, 143, 122, 989, 241, 266, 1177, 255, 191, 192, 309, 199, 197, 209, 429, 206, 184, 202, 161, 141, 138, 136, 184, 163, 152, 88, 128, 64, 63, 58, 104, 95, 88, 66]

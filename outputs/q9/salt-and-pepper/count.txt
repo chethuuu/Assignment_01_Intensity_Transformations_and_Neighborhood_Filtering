@@ -1,1 +1,6 @@
-Estimated rice grain count: 73
+Input: rice_saltpepper.png
+Mode: Salt-Pepper
+Otsu threshold: 131.00
+Min area kept: 50 px
+Counted rice grains: 47
+Areas (px): [61, 340, 529, 125, 4359, 121, 217, 2565, 431, 127, 108, 76, 248, 440, 405, 558, 213, 230, 193, 1057, 226, 181, 474, 150, 190, 210, 299, 192, 212, 460, 207, 188, 220, 391, 169, 161, 201, 182, 182, 96, 159, 55, 61, 62, 103, 108, 113]
