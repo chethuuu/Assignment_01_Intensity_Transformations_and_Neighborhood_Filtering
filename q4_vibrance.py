@@ -21,7 +21,7 @@ def save_gray(img_u8: np.ndarray, path: Path):
     Image.fromarray(img_u8).save(path)
     print("Saved:", path)
 
-
+# Vibrance LUT
 def vibrance_lut(a: float, sigma: float) -> np.ndarray:
     x = np.arange(256, dtype=np.float32)
     boost = a * 128.0 * np.exp(-((x - 128.0) ** 2) / (2.0 * sigma ** 2))
